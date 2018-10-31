@@ -7,6 +7,7 @@
 #include "utilities/OBJLoader.hpp"
 #include "utilities/floats.hpp"
 #include "utilities/geometry.hpp"
+#include <mutex>
 
 const std::vector<globalLight> lightSources = { {{0.3f, 0.5f, 1.0f}, {1.0f, 1.0f, 1.0f}} };
 
@@ -106,13 +107,14 @@ inline void rasteriseTriangles( Mesh &transformedMesh,
                          std::vector<unsigned char> &frameBuffer,
                          std::vector<float> &depthBuffer,
                          unsigned int const width,
-                         unsigned int const height )
+                         unsigned int const height,
+                          std::mutex &mutex)
 {
 	for (unsigned int i = 0; i < transformedMesh.faceCount(); i++) {
 
 		Face face = transformedMesh.getFace(i);
-		unsigned int minx = int(std::floor(std::min(std::min(face.v0.x, face.v1.x), face.v2.x)));
-		unsigned int maxx = int(std::ceil (std::max(std::max(face.v0.x, face.v1.x), face.v2.x)));
+    unsigned int minx = int(std::floor(std::min(std::min(face.v0.x, face.v1.x), face.v2.x)));
+    unsigned int maxx = int(std::ceil (std::max(std::max(face.v0.x, face.v1.x), face.v2.x)));
 		unsigned int miny = int(std::floor(std::min(std::min(face.v0.y, face.v1.y), face.v2.y)));
 		unsigned int maxy = int(std::ceil (std::max(std::max(face.v0.y, face.v1.y), face.v2.y)));
 
@@ -129,11 +131,13 @@ inline void rasteriseTriangles( Mesh &transformedMesh,
 			for(unsigned int y = miny; y < maxy; y++) {
 				float u, v, w;
 				if(face.inRange(x,y,u,v,w)){
+          mutex.lock();
 					float pixelDepth = face.getDepth(u,v,w);
+          mutex.unlock();
 					if( pixelDepth >= -1 && pixelDepth <= 1 && pixelDepth < depthBuffer.at(y * width + x)) {
 						depthBuffer.at(y * width + x) = pixelDepth;
 						runFragmentShader(frameBuffer, x + (width * y), face, float3(u,v,w));
-					}
+          }
 				}
 			}
 		}
@@ -240,20 +244,28 @@ std::vector<unsigned char> rasteriseCPU(std::string inputFile, unsigned int widt
     workQueue.reserve(totalItemsToRender);
 
 	fillWorkQueue(workQueue, largestBoundingBoxSide, depthLimit);
+  auto start = std::chrono::high_resolution_clock::now();
+  std::mutex mutex;
 
     for(unsigned int item = 0; item < totalItemsToRender; item++) {
         if(item % 10000 == 0) {
             std::cout << item << "/" << totalItemsToRender << " complete." << std::endl;
         }
         workItemCPU objectToRender = workQueue.at(item);
+        #pragma omp parallel for schedule(guided)
         for (unsigned int i = 0; i < meshes.size(); i++) {
             Mesh &mesh = meshes.at(i);
             Mesh &transformedMesh = transformedMeshes.at(i);
             runVertexShader(mesh, transformedMesh, objectToRender.distanceOffset, objectToRender.scale, width, height);
-            rasteriseTriangles(transformedMesh, frameBuffer, depthBuffer, width, height);
+            //mutex.lock();
+            rasteriseTriangles(transformedMesh, frameBuffer, depthBuffer, width, height, mutex);
+            //mutex.unlock();
         }
     }
+    auto end = std::chrono::high_resolution_clock::now();
+    auto time_span =std::chrono::duration_cast<std::chrono::duration<double>>(end - start);
 
+    std::cout << "Time spent iterating workQueue: "<<(time_span.count()) << std::endl;
 	std::cout << "Finished!" << std::endl;
 
 	return frameBuffer;
