@@ -112,7 +112,7 @@ struct workItemGPU {
     workItemGPU() : scale(1), distanceOffset(make_float3(0, 0, 0)) {}
 };
 
-void runVertexShader( float4 &vertex,
+__device__ __host__ void runVertexShader( float4 &vertex,
                       float3 positionOffset,
                       float scale,
 					  unsigned int const width,
@@ -227,7 +227,7 @@ void runFragmentShader( unsigned char* frameBuffer,
  * @param width                   width of the image
  * @param height                  height of the image
  */
-void rasteriseTriangle( float4 &v0, float4 &v1, float4 &v2,
+__device__ __host__ void rasteriseTriangle( float4 &v0, float4 &v1, float4 &v2,
                         GPUMesh &mesh,
                         unsigned int triangleIndex,
                         unsigned char* frameBuffer,
@@ -279,7 +279,7 @@ void rasteriseTriangle( float4 &v0, float4 &v1, float4 &v2,
 }
 
 
-void renderMeshes(
+__device__ __host__ void renderMeshes(
         unsigned long totalItemsToRender,
         workItemGPU* workQueue,
         GPUMesh* meshes,
@@ -388,28 +388,42 @@ void fillWorkQueue(
 
 }
 
-__global__ void device_init_framebuffer(int* location) {
+__global__ void device_init_framebuffer(unsigned char* location) {
+	int index = blockIdx.x * blockDim.x +threadIdx.x;
 
- 	if(threadIdx.x % 4 == 0){
-		*(location+threadIdx.x) = 255;
+ 	if((index+1) % 4 == 0){
+		location[index] = 255;
 	}
 	else{
-		*(location+threadIdx.x) = 0;
+		location[index] = 0;
 	}
 
-	printf("data %i\n", *(location+threadIdx.x));
-
-	// if(threadIdx.x % 4 == 0){
-		// cudaMemcpy(location, &to_send, sizeof(int), cudaMemcpyHostToDevice);
-	// }
-	// else{
-	// 	cudaMemcpy(location+threadIdx.x, &0, sizeof(int), cudaMemcpyHostToDevice);
-	// }
+	//printf("data %i\n", *(location+threadIdx.x));
 }
 
-__global__ void device_init_depthbuffer() {
-	printf("I'm thread %i!\n", threadIdx.x);
-}
+__global__ void device_init_depthbuffer(int* location) {
+	int index = blockIdx.x * blockDim.x +threadIdx.x;
+
+		location[index] = 16777216;
+
+	}
+	__global__ void device_renderMeshes(
+		unsigned long totalItemsToRender,
+		workItemGPU* workQueue,
+		GPUMesh* meshes,
+		unsigned int meshCount,
+		unsigned int width,
+		unsigned int height,
+		unsigned char* frameBuffer,
+		int* depthBuffer)
+
+		{
+
+		int index = blockIdx.x * blockDim.x +threadIdx.x;
+
+
+		}
+
 
 // This function kicks off the rasterisation process.
 std::vector<unsigned char> rasteriseGPU(std::string inputFile, unsigned int width, unsigned int height, unsigned int depthLimit) {
@@ -435,17 +449,16 @@ std::vector<unsigned char> rasteriseGPU(std::string inputFile, unsigned int widt
     // We first need to allocate some buffers.
     // The framebuffer contains the image being rendered.
     unsigned char* frameBuffer = new unsigned char[width * height * 4];
-		int* device_frameBuffer_pointer;
+		unsigned char* device_frameBuffer_pointer;
 		size_t size = sizeof(*frameBuffer)*(width * height * 4);
 		std::cout << "size is: "<<size << '\n';
 		checkCudaErrors(
 			cudaMalloc(&device_frameBuffer_pointer, size)
 		);
-		std::cout << "device_frameBuffer_pointer: "<<device_frameBuffer_pointer << '\n';
-		dim3 grid(1, 1, 1);
-		dim3 block(4 * width * height, 1, 1);
-		int array_size = (width * height * 4);
-		device_init_framebuffer<<<1, array_size>>>(device_frameBuffer_pointer);
+		//std::cout << "device_frameBuffer_pointer: "<<device_frameBuffer_pointer << '\n';
+		dim3 threadsInBlock(32, 32); // Don't know how many threads I need, just make a bunch
+		dim3 grid(width/threadsInBlock.x, height/threadsInBlock.y, 1);
+		device_init_framebuffer<<<grid, threadsInBlock>>>(device_frameBuffer_pointer);
 		cudaDeviceSynchronize();
 
 
@@ -460,14 +473,17 @@ std::vector<unsigned char> rasteriseGPU(std::string inputFile, unsigned int widt
 	}
 
 	int* depthBuffer = new int[width * height];
-	int* device_depthBuffer_pointer;;
+	int* device_depthBuffer_pointer;
 	size_t size_depthBuffer = sizeof(*depthBuffer)*(width * height);
 	std::cout << "size of depthBuffer is: "<<size << '\n';
 	checkCudaErrors(
 		cudaMalloc(&device_depthBuffer_pointer, size_depthBuffer)
 	);
+	device_init_depthbuffer<<<grid, threadsInBlock>>>(device_depthBuffer_pointer);
 
 	std::cout << "device_depthBuffer_pointer: "<<device_depthBuffer_pointer << '\n';
+
+
 
 
 	for(unsigned int i = 0; i < width * height; i++) {
@@ -478,6 +494,8 @@ std::vector<unsigned char> rasteriseGPU(std::string inputFile, unsigned int widt
     float3 boundingBoxMax = make_float3(std::numeric_limits<float>::min(), std::numeric_limits<float>::min(), std::numeric_limits<float>::min());
 
     std::cout << "Rendering image... " << std::endl;
+
+
 
     for(unsigned int i = 0; i < meshes.size(); i++) {
         for(unsigned int vertex = 0; vertex < meshes.at(i).vertexCount; vertex++) {
@@ -505,12 +523,72 @@ std::vector<unsigned char> rasteriseGPU(std::string inputFile, unsigned int widt
         totalItemsToRender += std::pow(26ul, level);
     }
 
+		GPUMesh* device_meshes;
+		std::vector<GPUMesh> host_meshes_vector(meshes.size());
+
+
+		checkCudaErrors(
+			cudaMalloc(&device_meshes, meshes.size()*sizeof(GPUMesh))
+		);
+
+		for (size_t i = 0; i< meshes.size(); i++){
+			GPUMesh mesh = meshes.at(i);
+			unsigned long vertexCount = mesh.vertexCount;
+
+			float4* device_vertices;
+			float3* device_normals;
+
+			checkCudaErrors(
+				cudaMalloc(&device_vertices, sizeof(float4)*vertexCount)
+			);
+			checkCudaErrors(
+				cudaMalloc(&device_normals, sizeof(float3)*vertexCount)
+			);
+			checkCudaErrors(
+				cudaMemcpy(device_vertices, meshes.at(i).vertices,sizeof(float4)*vertexCount , cudaMemcpyHostToDevice)
+			);
+			checkCudaErrors(
+				cudaMemcpy(device_normals, meshes.at(i).normals,sizeof(float3)*vertexCount , cudaMemcpyHostToDevice)
+			);
+
+			host_meshes_vector.at(i).vertices = device_vertices;
+			host_meshes_vector.at(i).normals = device_normals;
+			host_meshes_vector.at(i).vertexCount = meshes.at(i).vertexCount;
+			host_meshes_vector.at(i).objectDiffuseColour = meshes.at(i).objectDiffuseColour;
+			host_meshes_vector.at(i).hasNormals = meshes.at(i).hasNormals;
+
+		}
+		checkCudaErrors(
+			cudaMemcpy(device_meshes, host_meshes_vector.data(), meshes.size()*sizeof(GPUMesh), cudaMemcpyHostToDevice)
+		);
+
     workItemGPU* workQueue = new workItemGPU[totalItemsToRender];
 
     std::cout << "Number of items to be rendered: " << totalItemsToRender << std::endl;
 
     unsigned long counter = 0;
     fillWorkQueue(workQueue, largestBoundingBoxSide, depthLimit, &counter);
+
+		size_t workQueue_size = sizeof(*workQueue)*(totalItemsToRender);
+		workItemGPU* device_workQueue_pointer;
+		checkCudaErrors(
+			cudaMalloc(&device_workQueue_pointer, workQueue_size)
+		);
+
+
+		checkCudaErrors(
+			cudaMemcpy(device_workQueue_pointer, workQueue, workQueue_size, cudaMemcpyHostToDevice)
+		);
+		// dim3 threadsInBlock(32, 32); // Don't know how many threads I need, just make a bunch
+		// dim3 grid(width/threadsInBlock.x, height/threadsInBlock.y, 1);
+		//device_init_framebuffer<<<grid, threadsInBlock>>>(device_frameBuffer_pointer);
+		dim3 mesh_block(totalItemsToRender,1);
+		dim3 mesh_grid(host_meshes_vector.size(),1,1);
+			device_renderMeshes<<<grid, threadsInBlock>>>(totalItemsToRender, device_workQueue_pointer,
+			host_meshes_vector.data(), host_meshes_vector.size(),
+			width, height, device_frameBuffer_pointer, device_depthBuffer_pointer);
+
+		checkCudaErrors(cudaDeviceSynchronize());
 
 	renderMeshes(
 			totalItemsToRender, workQueue,

@@ -107,8 +107,7 @@ inline void rasteriseTriangles( Mesh &transformedMesh,
                          std::vector<unsigned char> &frameBuffer,
                          std::vector<float> &depthBuffer,
                          unsigned int const width,
-                         unsigned int const height,
-                          std::mutex &mutex)
+                         unsigned int const height)
 {
 	for (unsigned int i = 0; i < transformedMesh.faceCount(); i++) {
 
@@ -131,9 +130,7 @@ inline void rasteriseTriangles( Mesh &transformedMesh,
 			for(unsigned int y = miny; y < maxy; y++) {
 				float u, v, w;
 				if(face.inRange(x,y,u,v,w)){
-          mutex.lock();
 					float pixelDepth = face.getDepth(u,v,w);
-          mutex.unlock();
 					if( pixelDepth >= -1 && pixelDepth <= 1 && pixelDepth < depthBuffer.at(y * width + x)) {
 						depthBuffer.at(y * width + x) = pixelDepth;
 						runFragmentShader(frameBuffer, x + (width * y), face, float3(u,v,w));
@@ -245,20 +242,18 @@ std::vector<unsigned char> rasteriseCPU(std::string inputFile, unsigned int widt
 
 	fillWorkQueue(workQueue, largestBoundingBoxSide, depthLimit);
   auto start = std::chrono::high_resolution_clock::now();
-  std::mutex mutex;
-
+  #pragma omp parallel for schedule(dynamic)
     for(unsigned int item = 0; item < totalItemsToRender; item++) {
         if(item % 10000 == 0) {
             std::cout << item << "/" << totalItemsToRender << " complete." << std::endl;
         }
         workItemCPU objectToRender = workQueue.at(item);
-        #pragma omp parallel for schedule(guided)
         for (unsigned int i = 0; i < meshes.size(); i++) {
             Mesh &mesh = meshes.at(i);
-            Mesh &transformedMesh = transformedMeshes.at(i);
+            Mesh transformedMesh = transformedMeshes.at(i);
             runVertexShader(mesh, transformedMesh, objectToRender.distanceOffset, objectToRender.scale, width, height);
             //mutex.lock();
-            rasteriseTriangles(transformedMesh, frameBuffer, depthBuffer, width, height, mutex);
+            rasteriseTriangles(transformedMesh, frameBuffer, depthBuffer, width, height);
             //mutex.unlock();
         }
     }
