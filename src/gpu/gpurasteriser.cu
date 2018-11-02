@@ -396,14 +396,13 @@ std::vector<unsigned char> rasteriseGPU(std::string inputFile, unsigned int widt
     // The framebuffer contains the image being rendered.
     unsigned char* frameBuffer = new unsigned char[width * height * 4];
 		unsigned char* device_frameBuffer_pointer;
-		size_t size = sizeof(*frameBuffer)*(width * height * 4);
-		std::cout << "size is: "<<size << '\n';
+
 		checkCudaErrors(
-			cudaMalloc(&device_frameBuffer_pointer, sizeof(*frameBuffer)*(width * height * 4))
+			cudaMalloc(&device_frameBuffer_pointer, sizeof(unsigned char)*(width * height * 4))
 		);
 		//std::cout << "device_frameBuffer_pointer: "<<device_frameBuffer_pointer << '\n';
-		dim3 threadsInBlock(1024, 1); // Don't know how many threads I need, just use MAX amount
-		dim3 grid((width * height * 4)/threadsInBlock.x, 1);
+		dim3 threadsInBlock(1024); // Don't know how many threads I need, just use MAX amount
+		dim3 grid((width * height * 4)/threadsInBlock.x);
 		device_init_framebuffer<<<grid, threadsInBlock>>>(device_frameBuffer_pointer);
 		cudaDeviceSynchronize();
 
@@ -414,9 +413,10 @@ std::vector<unsigned char> rasteriseGPU(std::string inputFile, unsigned int widt
 	checkCudaErrors(
 		cudaMalloc(&device_depthBuffer_pointer, sizeof(*depthBuffer)*(width * height))
 	);
-	dim3 threadsInBlock_db(1024, 1); // Don't know how many threads I need, just use MAX amount
-	dim3 grid_db((width * height)/threadsInBlock_db.x, 1);
+	dim3 threadsInBlock_db(1024); // Don't know how many threads I need, just use MAX amount
+	dim3 grid_db((width * height)/threadsInBlock_db.x);
 	device_init_depthbuffer<<<grid_db, threadsInBlock_db>>>(device_depthBuffer_pointer);
+	cudaDeviceSynchronize();
 
 	std::cout << "device_depthBuffer_pointer: "<<device_depthBuffer_pointer << '\n';
 
@@ -455,9 +455,7 @@ std::vector<unsigned char> rasteriseGPU(std::string inputFile, unsigned int widt
 		std::vector<GPUMesh> host_meshes_vector(meshes.size());
 
 
-		checkCudaErrors(
-			cudaMalloc(&device_meshes, meshes.size()*sizeof(GPUMesh))
-		);
+
 
 		for (size_t i = 0; i< meshes.size(); i++){
 			GPUMesh mesh = meshes.at(i);
@@ -489,6 +487,9 @@ std::vector<unsigned char> rasteriseGPU(std::string inputFile, unsigned int widt
 
 		}
 		checkCudaErrors(
+			cudaMalloc(&device_meshes, meshes.size()*sizeof(GPUMesh))
+		);
+		checkCudaErrors(
 			cudaMemcpy(device_meshes, host_meshes_vector.data(), meshes.size()*sizeof(GPUMesh), cudaMemcpyHostToDevice)
 		);
 
@@ -499,7 +500,6 @@ std::vector<unsigned char> rasteriseGPU(std::string inputFile, unsigned int widt
     unsigned long counter = 0;
     fillWorkQueue(workQueue, largestBoundingBoxSide, depthLimit, &counter);
 
-		size_t workQueue_size = sizeof(workItemGPU)*(totalItemsToRender);
 		workItemGPU* device_workQueue_pointer;
 		checkCudaErrors(
 			cudaMalloc(&device_workQueue_pointer, sizeof(workItemGPU)*totalItemsToRender)
@@ -532,7 +532,7 @@ std::vector<unsigned char> rasteriseGPU(std::string inputFile, unsigned int widt
 		checkCudaErrors(cudaDeviceSynchronize());
 
 		checkCudaErrors(
-			cudaMemcpy(frameBuffer, device_frameBuffer_pointer, size, cudaMemcpyDeviceToHost)
+			cudaMemcpy(frameBuffer, device_frameBuffer_pointer, sizeof(unsigned char)*(width * height * 4), cudaMemcpyDeviceToHost)
 		);
 
 	// renderMeshes(
