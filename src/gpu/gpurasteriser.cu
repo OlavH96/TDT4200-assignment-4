@@ -278,73 +278,6 @@ __device__ void runFragmentShader( unsigned char* frameBuffer,
 	}
 }
 
-
-//  __host__ void renderMeshes(
-//         unsigned long totalItemsToRender,
-//         workItemGPU* workQueue,
-//         GPUMesh* meshes,
-//         unsigned int meshCount,
-//         unsigned int width,
-//         unsigned int height,
-//         unsigned char* frameBuffer,
-//         int* depthBuffer
-// ) {
-// 		std::chrono::high_resolution_clock::time_point start, end, start1, end1, start2, end2;
-//
-//     for(unsigned int item = 0; item < totalItemsToRender; item++) {
-// 			if (item==0){
-// 				std::cout << "items: "<<totalItemsToRender << '\n';
-// 				start = std::chrono::high_resolution_clock::now();
-// 			}
-//         workItemGPU objectToRender = workQueue[item];
-//         for (unsigned int meshIndex = 0; meshIndex < meshCount; meshIndex++) {
-// 					if (item==0 && meshIndex ==0){
-// 						std::cout << "meshCount: "<<meshCount << '\n';
-// 						start1 = std::chrono::high_resolution_clock::now();
-//
-// 					}
-//             for(unsigned int triangleIndex = 0; triangleIndex < meshes[meshIndex].vertexCount / 3; triangleIndex++) {
-// 							if (item==0 && triangleIndex == 0 && meshIndex ==0){
-// 								std::cout << "triangles: "<<meshes[meshIndex].vertexCount / 3 << '\n';
-// 								start2 = std::chrono::high_resolution_clock::now();
-//
-// 							}
-// 								float4 v0 = meshes[meshIndex].vertices[triangleIndex * 3 + 0];
-//                 float4 v1 = meshes[meshIndex].vertices[triangleIndex * 3 + 1];
-//                 float4 v2 = meshes[meshIndex].vertices[triangleIndex * 3 + 2];
-//
-//                 runVertexShader(v0, objectToRender.distanceOffset, objectToRender.scale, width, height);
-//                 runVertexShader(v1, objectToRender.distanceOffset, objectToRender.scale, width, height);
-//                 runVertexShader(v2, objectToRender.distanceOffset, objectToRender.scale, width, height);
-//
-//                 rasteriseTriangle(v0, v1, v2, meshes[meshIndex], triangleIndex, frameBuffer, depthBuffer, width, height);
-// 								if (item==0 && triangleIndex == 0 && meshIndex ==0){
-// 									end2 = std::chrono::high_resolution_clock::now();
-// 									auto time_span =std::chrono::duration_cast<std::chrono::duration<double>>(end2 - start2);
-//
-// 									std::cout << "Time spent iterating triangleIndex: "<<(time_span.count()) << std::endl;
-//
-// 								}
-// 						}
-// 						if (item==0 && meshIndex ==0){
-// 							end1 = std::chrono::high_resolution_clock::now();
-// 							auto time_span =std::chrono::duration_cast<std::chrono::duration<double>>(end1 - start1);
-//
-// 							std::cout << "Time spent iterating meshIndex: "<<(time_span.count()) << std::endl;
-//
-// 						}
-//         }
-// 				if (item==0){
-// 					end = std::chrono::high_resolution_clock::now();
-// 					auto time_span =std::chrono::duration_cast<std::chrono::duration<double>>(end - start);
-//
-// 					std::cout << "Time spent iterating totalItemsToRender: "<<(time_span.count()) << std::endl;
-// 				}
-//     }
-// }
-
-
-
 void fillWorkQueue(
         workItemGPU* workQueue,
         float largestBoundingBoxSide,
@@ -420,22 +353,20 @@ __global__ void device_init_depthbuffer(int* location) {
 		{
 
 			//int index = blockIdx.x * blockDim.x +threadIdx.x;
-			int block_item = blockIdx.x; // totalItemsToRender block id
-			int thread_mesh = threadIdx.x;
 
-	    workItemGPU objectToRender = workQueue[blockIdx.x];
+	    workItemGPU objectToRender = workQueue[threadIdx.x];
 
-	    for(unsigned int triangleIndex = 0; triangleIndex < meshes[threadIdx.x].vertexCount / 3; triangleIndex++) {
+	    for(unsigned int triangleIndex = 0; triangleIndex < meshes[blockIdx.x].vertexCount / 3; triangleIndex++) {
 
-					float4 v0 = meshes[threadIdx.x].vertices[triangleIndex * 3 + 0];
-	        float4 v1 = meshes[threadIdx.x].vertices[triangleIndex * 3 + 1];
-	        float4 v2 = meshes[threadIdx.x].vertices[triangleIndex * 3 + 2];
+					float4 v0 = meshes[blockIdx.x].vertices[triangleIndex * 3 + 0];
+	        float4 v1 = meshes[blockIdx.x].vertices[triangleIndex * 3 + 1];
+	        float4 v2 = meshes[blockIdx.x].vertices[triangleIndex * 3 + 2];
 
 	        runVertexShader(v0, objectToRender.distanceOffset, objectToRender.scale, width, height);
 	        runVertexShader(v1, objectToRender.distanceOffset, objectToRender.scale, width, height);
 	        runVertexShader(v2, objectToRender.distanceOffset, objectToRender.scale, width, height);
 
-	        rasteriseTriangle(v0, v1, v2, meshes[threadIdx.x], triangleIndex, frameBuffer, depthBuffer, width, height);
+	        rasteriseTriangle(v0, v1, v2, meshes[blockIdx.x], triangleIndex, frameBuffer, depthBuffer, width, height);
 			}
 		}
 
@@ -493,8 +424,6 @@ std::vector<unsigned char> rasteriseGPU(std::string inputFile, unsigned int widt
     float3 boundingBoxMax = make_float3(std::numeric_limits<float>::min(), std::numeric_limits<float>::min(), std::numeric_limits<float>::min());
 
     std::cout << "Rendering image... " << std::endl;
-
-
 
     for(unsigned int i = 0; i < meshes.size(); i++) {
         for(unsigned int vertex = 0; vertex < meshes.at(i).vertexCount; vertex++) {
@@ -587,8 +516,8 @@ std::vector<unsigned char> rasteriseGPU(std::string inputFile, unsigned int widt
 		std::cout << "totalItemsToRender"  <<totalItemsToRender<< '\n';
 		std::cout << "meshes size "  <<meshes.size()<< '\n';
 
-		dim3 mesh_grid(totalItemsToRender, 1);
-		dim3 mesh_block(meshes.size(), 1);
+		dim3 mesh_grid(meshes.size(), 1);
+		dim3 mesh_block(totalItemsToRender, 1);
 
 		device_renderMeshes<<<mesh_grid, mesh_block>>>(
 			totalItemsToRender,
