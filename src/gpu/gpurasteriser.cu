@@ -166,13 +166,13 @@ __device__ void runVertexShader( float4 &vertex,
 
 		float4 transformed = (MVP * vertex);
 
-    vertex.x = transformed.x / transformed.w;
-    vertex.y = transformed.y / transformed.w;
-    vertex.z = transformed.z / transformed.w;
-    vertex.w = 1.0;
+    //vertex.x = transformed.x / transformed.w;
+    //vertex.y = transformed.y / transformed.w;
 
-    vertex.x = (vertex.x + 0.5f) * (float) width;
-    vertex.y = (vertex.y + 0.5f) * (float) height;
+    vertex.x = ((transformed.x / transformed.w) + 0.5f) * (float) width;
+    vertex.y = ((transformed.y / transformed.w) + 0.5f) * (float) height;
+		vertex.z = transformed.z / transformed.w;
+		vertex.w = 1.0;
 }
 
 
@@ -257,20 +257,23 @@ __device__ void runFragmentShader( unsigned char* frameBuffer,
 			float u, v, w;
 			// For each point in the bounding box, determine whether that point lies inside the triangle
 			if (isPointInTriangle(v0, v1, v2, x, y, u, v, w)) {
+				int index = y * width + x;
 				// If it does, compute the distance between that point on the triangle and the screen
 				float pixelDepth = computeDepth(v0, v1, v2, make_float3(u, v, w));
 				// If the point is closer than any point we have seen thus far, render it.
 				// Otherwise it is hidden behind another object, and we can throw it away
 				// Because it will be invisible anyway.
-                if (pixelDepth >= -1 && pixelDepth <= 1) {
-					int pixelDepthConverted = depthFloatToInt(pixelDepth);
-                 	if (pixelDepthConverted < depthBuffer[y * width + x]) {
-					    // If it is, we update the depth buffer to the new depth.
-					    depthBuffer[y * width + x] = pixelDepthConverted;
 
-					    // And finally we determine the colour of the pixel, now that
-					    // we know our pixel is the closest we have seen thus far.
-						runFragmentShader(frameBuffer, x + (width * y), mesh, triangleIndex, make_float3(u, v, w));
+	        if (pixelDepth >= -1 && pixelDepth <= 1) {
+						int pixelDepthConverted = depthFloatToInt(pixelDepth);
+
+						if (pixelDepthConverted < depthBuffer[index]) {
+		    // If it is, we update the depth buffer to the new depth.
+							depthBuffer[index] = pixelDepthConverted;
+
+							// And finally we determine the colour of the pixel, now that
+							// we know our pixel is the closest we have seen thus far.
+							runFragmentShader(frameBuffer, index, mesh, triangleIndex, make_float3(u, v, w));
 					}
 				}
 			}
@@ -354,19 +357,19 @@ __global__ void device_init_depthbuffer(int* location) {
 
 			//int index = blockIdx.x * blockDim.x +threadIdx.x;
 
-	    workItemGPU objectToRender = workQueue[threadIdx.x];
+	    workItemGPU objectToRender = workQueue[blockIdx.x];//blockIdx.x
 
-	    for(unsigned int triangleIndex = 0; triangleIndex < meshes[blockIdx.x].vertexCount / 3; triangleIndex++) {
+	    for(unsigned int triangleIndex = 0; triangleIndex < meshes[threadIdx.x].vertexCount / 3; triangleIndex++) {
 
-					float4 v0 = meshes[blockIdx.x].vertices[triangleIndex * 3 + 0];
-	        float4 v1 = meshes[blockIdx.x].vertices[triangleIndex * 3 + 1];
-	        float4 v2 = meshes[blockIdx.x].vertices[triangleIndex * 3 + 2];
+					float4 v0 = meshes[threadIdx.x].vertices[triangleIndex * 3 + 0];
+	        float4 v1 = meshes[threadIdx.x].vertices[triangleIndex * 3 + 1];
+	        float4 v2 = meshes[threadIdx.x].vertices[triangleIndex * 3 + 2];
 
 	        runVertexShader(v0, objectToRender.distanceOffset, objectToRender.scale, width, height);
 	        runVertexShader(v1, objectToRender.distanceOffset, objectToRender.scale, width, height);
 	        runVertexShader(v2, objectToRender.distanceOffset, objectToRender.scale, width, height);
 
-	        rasteriseTriangle(v0, v1, v2, meshes[blockIdx.x], triangleIndex, frameBuffer, depthBuffer, width, height);
+	        rasteriseTriangle(v0, v1, v2, meshes[threadIdx.x], triangleIndex, frameBuffer, depthBuffer, width, height);
 			}
 		}
 
@@ -396,27 +399,42 @@ std::vector<unsigned char> rasteriseGPU(std::string inputFile, unsigned int widt
     // The framebuffer contains the image being rendered.
     unsigned char* frameBuffer = new unsigned char[width * height * 4];
 		unsigned char* device_frameBuffer_pointer;
-
+		std::chrono::duration<double> total_time(0);
+		auto start = std::chrono::high_resolution_clock::now();
 		checkCudaErrors(
 			cudaMalloc(&device_frameBuffer_pointer, sizeof(unsigned char)*(width * height * 4))
 		);
+		auto end = std::chrono::high_resolution_clock::now();
+		total_time += std::chrono::duration_cast<std::chrono::duration<double>>(end - start);
+
 		//std::cout << "device_frameBuffer_pointer: "<<device_frameBuffer_pointer << '\n';
 		dim3 threadsInBlock(1024); // Don't know how many threads I need, just use MAX amount
 		dim3 grid((width * height * 4)/threadsInBlock.x);
+		start = std::chrono::high_resolution_clock::now();
 		device_init_framebuffer<<<grid, threadsInBlock>>>(device_frameBuffer_pointer);
 		cudaDeviceSynchronize();
+		end = std::chrono::high_resolution_clock::now();
+		total_time += std::chrono::duration_cast<std::chrono::duration<double>>(end - start);
 
 
 	int* depthBuffer = new int[width * height];
 	int* device_depthBuffer_pointer;
-
+	cudaDeviceSynchronize();
+	start = std::chrono::high_resolution_clock::now();
 	checkCudaErrors(
 		cudaMalloc(&device_depthBuffer_pointer, sizeof(*depthBuffer)*(width * height))
 	);
+	cudaDeviceSynchronize();
+	end = std::chrono::high_resolution_clock::now();
+	total_time += std::chrono::duration_cast<std::chrono::duration<double>>(end - start);
+
 	dim3 threadsInBlock_db(1024); // Don't know how many threads I need, just use MAX amount
 	dim3 grid_db((width * height)/threadsInBlock_db.x);
+	start = std::chrono::high_resolution_clock::now();
 	device_init_depthbuffer<<<grid_db, threadsInBlock_db>>>(device_depthBuffer_pointer);
 	cudaDeviceSynchronize();
+	end = std::chrono::high_resolution_clock::now();
+	total_time += std::chrono::duration_cast<std::chrono::duration<double>>(end - start);
 
 	std::cout << "device_depthBuffer_pointer: "<<device_depthBuffer_pointer << '\n';
 
@@ -464,6 +482,7 @@ std::vector<unsigned char> rasteriseGPU(std::string inputFile, unsigned int widt
 			float4* device_vertices;
 			float3* device_normals;
 
+			start = std::chrono::high_resolution_clock::now();
 			checkCudaErrors(
 				cudaMalloc(&device_vertices, sizeof(float4)*vertexCount)
 			);
@@ -477,6 +496,8 @@ std::vector<unsigned char> rasteriseGPU(std::string inputFile, unsigned int widt
 			checkCudaErrors(
 				cudaMemcpy(device_normals, meshes.at(i).normals, sizeof(float3)*vertexCount , cudaMemcpyHostToDevice)
 			);
+			end = std::chrono::high_resolution_clock::now();
+			total_time += std::chrono::duration_cast<std::chrono::duration<double>>(end - start);
 			//Store the device pointers in the allocated array on the CPU side..
 			host_meshes_vector.at(i).vertices = device_vertices;
 			host_meshes_vector.at(i).normals = device_normals;
@@ -486,12 +507,15 @@ std::vector<unsigned char> rasteriseGPU(std::string inputFile, unsigned int widt
 			host_meshes_vector.at(i).hasNormals = meshes.at(i).hasNormals;
 
 		}
+		start = std::chrono::high_resolution_clock::now();
 		checkCudaErrors(
 			cudaMalloc(&device_meshes, meshes.size()*sizeof(GPUMesh))
 		);
 		checkCudaErrors(
 			cudaMemcpy(device_meshes, host_meshes_vector.data(), meshes.size()*sizeof(GPUMesh), cudaMemcpyHostToDevice)
 		);
+		end = std::chrono::high_resolution_clock::now();
+		total_time += std::chrono::duration_cast<std::chrono::duration<double>>(end - start);
 
     workItemGPU* workQueue = new workItemGPU[totalItemsToRender];
 
@@ -501,14 +525,16 @@ std::vector<unsigned char> rasteriseGPU(std::string inputFile, unsigned int widt
     fillWorkQueue(workQueue, largestBoundingBoxSide, depthLimit, &counter);
 
 		workItemGPU* device_workQueue_pointer;
+		start = std::chrono::high_resolution_clock::now();
 		checkCudaErrors(
 			cudaMalloc(&device_workQueue_pointer, sizeof(workItemGPU)*totalItemsToRender)
 		);
 
-
 		checkCudaErrors(
 			cudaMemcpy(device_workQueue_pointer, workQueue, sizeof(workItemGPU)*totalItemsToRender, cudaMemcpyHostToDevice)
 		);
+		end = std::chrono::high_resolution_clock::now();
+		total_time += end-start;
 		// dim3 threadsInBlock(32, 32); // Don't know how many threads I need, just make a bunch
 		// dim3 grid(width/threadsInBlock.x, height/threadsInBlock.y, 1);
 		//device_init_framebuffer<<<grid, threadsInBlock>>>(device_frameBuffer_pointer);
@@ -516,8 +542,9 @@ std::vector<unsigned char> rasteriseGPU(std::string inputFile, unsigned int widt
 		std::cout << "totalItemsToRender"  <<totalItemsToRender<< '\n';
 		std::cout << "meshes size "  <<meshes.size()<< '\n';
 
-		dim3 mesh_grid(meshes.size(), 1);
-		dim3 mesh_block(totalItemsToRender, 1);
+		dim3 mesh_grid(totalItemsToRender, 1);
+		dim3 mesh_block(meshes.size(), 1);
+		start = std::chrono::high_resolution_clock::now();
 
 		device_renderMeshes<<<mesh_grid, mesh_block>>>(
 			totalItemsToRender,
@@ -530,7 +557,9 @@ std::vector<unsigned char> rasteriseGPU(std::string inputFile, unsigned int widt
 			device_depthBuffer_pointer);
 
 		checkCudaErrors(cudaDeviceSynchronize());
-
+		end = std::chrono::high_resolution_clock::now();
+		total_time += std::chrono::duration_cast<std::chrono::duration<double>>(end - start);
+		std::cout << "Time spent rendering on GPU wil allocations and copies: "<<(total_time.count()) << std::endl;
 		checkCudaErrors(
 			cudaMemcpy(frameBuffer, device_frameBuffer_pointer, sizeof(unsigned char)*(width * height * 4), cudaMemcpyDeviceToHost)
 		);
